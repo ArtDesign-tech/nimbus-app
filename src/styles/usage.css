@@ -1,0 +1,439 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   USAGE PAGE CSS — unified dengan design system globals.css
+   Token: --bg, --surface, --surface2, --border, --accent, --text, --text-muted,
+          --text-dim, --radius, --radius-lg, --font, --mono
+   ───────────────────────────────────────────────────────────────────────────── */
+
+.usage-container {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Ambient glow — sama dengan billing/chat */
+.usage-container::before {
+  content: '';
+  position: fixed;
+  top: -100px;
+  right: -50px;
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, rgba(16, 163, 127, 0.1) 0%, transparent 70%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(50px);
+}
+
+.usage-container::after {
+  content: '';
+  position: fixed;
+  bottom: -100px;
+  left: -50px;
+  width: 280px;
+  height: 280px;
+  background: radial-gradient(circle, rgba(16, 163, 127, 0.06) 0%, transparent 70%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(50px);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+.usage-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+  margin-top: 12px;
+  z-index: 10;
+  width: 100%;
+}
+
+.usage-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.usage-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+}
+
+.usage-subtitle strong {
+  color: var(--accent);
+}
+
+/* ── Content layout ─────────────────────────────────────────────────────────── */
+.usage-content {
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 48px;
+  width: 100%;
+}
+
+/* ── Glass Cards — sama persis dengan chat sidebar cards ─────────────────────── */
+.glass-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-title svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── Stat row ───────────────────────────────────────────────────────────────── */
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.stat-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+/* ── Progress bar ── menggunakan token yang sama dengan billing ─────────────── */
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 100px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 100px;
+  transition: width 1s cubic-bezier(0.25, 1, 0.5, 1);
+  position: relative;
+}
+
+/* shimmer sama dengan billing */
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0) 100%);
+  animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-fill.warning {
+  background: #f59e0b;
+}
+
+.progress-fill.danger {
+  background: var(--error);
+}
+
+/* ── Window meta row ─────────────────────────────────────────────────────────── */
+.window-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.window-remaining {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.remaining-num {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--mono);
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.remaining-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--mono);
+}
+
+/* ETA badge — pakai accent hijau sesuai design system */
+.eta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(16, 163, 127, 0.2);
+  color: var(--accent);
+  border-radius: 100px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+/* ── Alert card ───────────────────────────────────────────────────────────────── */
+.alert-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(239, 68, 68, 0.07);
+  border: 1px solid rgba(239, 68, 68, 0.18);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-size: 13px;
+  color: #fca5a5;
+  line-height: 1.5;
+}
+
+.alert-card svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--error);
+}
+
+.alert-card strong {
+  color: var(--text);
+}
+
+/* ── Bar chart ─────────────────────────────────────────────────────────────── */
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 110px;
+  padding-bottom: 26px;
+  position: relative;
+}
+
+.bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  position: relative;
+  height: 100%;
+}
+
+.bar-track {
+  width: 100%;
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  overflow: hidden;
+}
+
+.bar-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: height 0.8s cubic-bezier(0.25, 1, 0.5, 1);
+  min-height: 4px;
+  opacity: 0.85;
+}
+
+.bar-fill:hover {
+  opacity: 1;
+}
+
+.bar-val {
+  font-size: 9px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  text-align: center;
+  display: block;
+  white-space: nowrap;
+}
+
+.bar-day {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: center;
+  font-family: var(--mono);
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+.chart-note {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  letter-spacing: 0.02em;
+  font-family: var(--mono);
+}
+
+/* ── Quick stats ─────────────────────────────────────────────────────────────── */
+.quick-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.quick-stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+
+.quick-stat-card:hover {
+  border-color: var(--border-hover);
+}
+
+.qs-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  font-family: var(--mono);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.qs-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--mono);
+}
+
+/* ── Billing link card ───────────────────────────────────────────────────────── */
+.billing-link-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(16, 163, 127, 0.15);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  flex-wrap: wrap;
+}
+
+.bl-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.bl-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.btn-billing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: 100px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  font-family: var(--font);
+  transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-billing:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+
+.btn-billing:active {
+  transform: translateY(0);
+}
+
+/* ── Desktop ─────────────────────────────────────────────────────────────────── */
+@media (min-width: 768px) {
+  .usage-container {
+    padding: 40px;
+    align-items: center;
+  }
+
+  .usage-header {
+    width: 100%;
+    max-width: 620px;
+  }
+
+  .usage-content {
+    width: 100%;
+    max-width: 620px;
+    gap: 20px;
+  }
+
+  .glass-card {
+    padding: 24px;
+  }
+
+  .remaining-num {
+    font-size: 32px;
+  }
+
+  .bar-chart {
+    height: 130px;
+  }
+}
