@@ -2,12 +2,16 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import babel from '@rolldown/plugin-babel'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { MODELS, VISION_PREPROCESSOR } from './src/lib/models'
 import { RATE_LIMITS, type PlanId } from './src/lib/rateLimit'
 
 function chatProxyPlugin(env: Record<string, string>): Plugin {
   // ── Payment config ─────────────────────────────────────────────────────
-  const FR3_BASE_URL = 'https://fr3newera.com/api/v1'
+  const DOKU_ENV = (env.DOKU_ENV || 'sandbox').toLowerCase()
+  const DOKU_BASE_URL = DOKU_ENV === 'production'
+    ? 'https://api.doku.com'
+    : 'https://api-sandbox.doku.com'
   const PRO_PRICE_IDR = 30_000
   const PAYMENTS_ENABLED = env.PAYMENTS_ENABLED === 'true'
 
@@ -75,24 +79,184 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
     return (planId === 'pro' ? 'pro' : 'free') as PlanId
   }
 
-  // ── FR3 NEWERA: create topup (QRIS) ────────────────────────────────────
-  async function fr3CreateTopup(nominal: number): Promise<any> {
-    const apikey = env.FR3_API_KEY
-    if (!apikey) throw new Error('FR3_API_KEY belum diset di .env')
-    const res = await fetch(`${FR3_BASE_URL}/topup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apikey, nominal }),
-    })
-    return res.json()
+  // ── DOKU helpers ───────────────────────────────────────────────────────
+  // Timestamp ISO-8601 dengan zona UTC, tanpa milidetik (format spec DOKU).
+  function dokuTimestamp(): string {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
   }
 
-  async function fr3CheckStatus(trxId: string): Promise<any> {
-    const apikey = env.FR3_API_KEY
-    if (!apikey) throw new Error('FR3_API_KEY belum diset di .env')
-    const url = `${FR3_BASE_URL}/check-status?apikey=${encodeURIComponent(apikey)}&idTransaksi=${encodeURIComponent(trxId)}`
-    const res = await fetch(url)
-    return res.json()
+  // Digest = base64(SHA256(minified body)). Body kosong → string kosong.
+  function dokuDigest(body: string): string {
+    if (!body) return ''
+    return createHash('sha256').update(body, 'utf8').digest('base64')
+  }
+
+  /**
+   * Build DOKU signature header value.
+   * String-to-sign:
+   *   Client-Id:<clientId>
+   *   Request-Id:<requestId>
+   *   Request-Timestamp:<timestamp>
+   *   Request-Target:<targetPath>
+   *   Digest:<digest>            ← only when body present
+   */
+  function dokuSignature(opts: {
+    clientId: string
+    requestId: string
+    timestamp: string
+    targetPath: string
+    digest: string
+    secretKey: string
+  }): string {
+    const lines = [
+      `Client-Id:${opts.clientId}`,
+      `Request-Id:${opts.requestId}`,
+      `Request-Timestamp:${opts.timestamp}`,
+      `Request-Target:${opts.targetPath}`,
+    ]
+    if (opts.digest) lines.push(`Digest:${opts.digest}`)
+    const stringToSign = lines.join('\n')
+    const hmac = createHmac('sha256', opts.secretKey).update(stringToSign, 'utf8').digest('base64')
+    return `HMACSHA256=${hmac}`
+  }
+
+  function shortInvoiceId(): string {
+    // Invoice DOKU max 64 char alfanum. Format: NIMBUS-<yyyymmdd>-<uuid8>
+    const d = new Date()
+    const ymd = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`
+    const uid = randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()
+    return `NIMBUS-${ymd}-${uid}`
+  }
+
+  /** Create DOKU Checkout payment session. Returns { url, invoiceNumber, sessionId, expiry }. */
+  async function dokuCreatePayment(opts: { userId: string; amount: number }): Promise<{
+    url: string
+    invoiceNumber: string
+    sessionId: string
+    expiredDate: string
+  }> {
+    const clientId = env.DOKU_CLIENT_ID
+    const secretKey = env.DOKU_SECRET_KEY
+    if (!clientId || !secretKey) throw new Error('DOKU_CLIENT_ID atau DOKU_SECRET_KEY belum diset')
+
+    const invoiceNumber = shortInvoiceId()
+    const targetPath = '/checkout/v1/payment'
+    const requestId = randomUUID()
+    const timestamp = dokuTimestamp()
+
+    // Tempel invoice ke return URL supaya halaman /billing/return tahu trxId
+    // walau sessionStorage hilang (mis. user buka di tab baru).
+    const baseReturn = env.DOKU_RETURN_URL || 'http://localhost:5173/billing/return'
+    const callbackUrl = baseReturn + (baseReturn.includes('?') ? '&' : '?') + `invoice_number=${encodeURIComponent(invoiceNumber)}`
+
+    const bodyObj: any = {
+      order: {
+        amount: opts.amount,
+        invoice_number: invoiceNumber,
+        currency: 'IDR',
+        callback_url: callbackUrl,
+      },
+      payment: {
+        payment_due_date: 60, // minutes
+      },
+      customer: {
+        id: opts.userId,
+      },
+    }
+    const body = JSON.stringify(bodyObj)
+    const digest = dokuDigest(body)
+    const signature = dokuSignature({ clientId, requestId, timestamp, targetPath, digest, secretKey })
+
+    const res = await fetch(`${DOKU_BASE_URL}${targetPath}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Client-Id': clientId,
+        'Request-Id': requestId,
+        'Request-Timestamp': timestamp,
+        'Signature': signature,
+      },
+      body,
+    })
+
+    const data: any = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const msg = data?.error?.message || JSON.stringify(data)
+      throw new Error(`DOKU error ${res.status}: ${msg}`)
+    }
+
+    const url = data?.response?.payment?.url
+    const sessionId = data?.response?.order?.session_id
+    const expiredDate = data?.response?.payment?.expired_date || ''
+    if (!url || !sessionId) throw new Error(`DOKU response invalid: ${JSON.stringify(data)}`)
+
+    return { url, invoiceNumber, sessionId, expiredDate }
+  }
+
+  /** Verify webhook signature from DOKU notification. Returns true if valid. */
+  function dokuVerifyNotification(opts: {
+    clientId: string
+    requestId: string
+    timestamp: string
+    signature: string
+    rawBody: string
+  }): boolean {
+    const secretKey = env.DOKU_SECRET_KEY
+    if (!secretKey) return false
+    if (opts.clientId !== env.DOKU_CLIENT_ID) return false
+
+    // Notification target path is the configured webhook path; DOKU includes it as Request-Target.
+    // We accept any reasonable target — verification must match what DOKU signed.
+    const targetPath = new URL(env.DOKU_NOTIFICATION_URL || 'http://localhost/api/payment/notify').pathname
+    const digest = dokuDigest(opts.rawBody)
+    const expected = dokuSignature({
+      clientId: opts.clientId,
+      requestId: opts.requestId,
+      timestamp: opts.timestamp,
+      targetPath,
+      digest,
+      secretKey,
+    })
+    return expected === opts.signature
+  }
+
+  /**
+   * Check transaction status via DOKU API. Used as fallback for dev environments
+   * where the notification webhook can't reach localhost. Returns null on error.
+   */
+  async function dokuCheckStatus(invoiceNumber: string): Promise<string | null> {
+    const clientId = env.DOKU_CLIENT_ID
+    const secretKey = env.DOKU_SECRET_KEY
+    if (!clientId || !secretKey) return null
+
+    const targetPath = `/orders/v1/status/${encodeURIComponent(invoiceNumber)}`
+    const requestId = randomUUID()
+    const timestamp = dokuTimestamp()
+    const signature = dokuSignature({
+      clientId, requestId, timestamp, targetPath, digest: '', secretKey,
+    })
+
+    try {
+      const res = await fetch(`${DOKU_BASE_URL}${targetPath}`, {
+        method: 'GET',
+        headers: {
+          'Client-Id': clientId,
+          'Request-Id': requestId,
+          'Request-Timestamp': timestamp,
+          'Signature': signature,
+        },
+      })
+      if (!res.ok) return null
+      const data: any = await res.json().catch(() => null)
+      // DOKU response format may vary; try common locations.
+      const status = data?.transaction?.status
+        || data?.response?.transaction?.status
+        || data?.order?.status
+        || data?.response?.order?.status
+      return status ? String(status).toUpperCase() : null
+    } catch {
+      return null
+    }
   }
 
   // ── Supabase: upgrade user plan to Pro ─────────────────────────────────
@@ -125,7 +289,13 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
   }
 
   // ── Supabase: track topup transaction ──────────────────────────────────
-  async function recordTopup(userId: string, trxId: string, amount: number, status: string): Promise<void> {
+  async function recordTopup(opts: {
+    userId: string
+    trxId: string
+    amount: number
+    status: string
+    sessionId?: string
+  }): Promise<void> {
     const supabaseUrl = env.VITE_SUPABASE_URL
     const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY
     if (!supabaseUrl || !supabaseKey) return
@@ -139,14 +309,36 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
         'Prefer': 'resolution=merge-duplicates,return=minimal',
       },
       body: JSON.stringify({
-        user_id: userId,
-        trx_id: trxId,
-        amount,
-        status,
-        provider: 'fr3newera',
+        user_id: opts.userId,
+        trx_id: opts.trxId,
+        amount: opts.amount,
+        status: opts.status,
+        provider: 'doku',
+        session_id: opts.sessionId || null,
         updated_at: new Date().toISOString(),
       }),
     })
+  }
+
+  /** Lookup topup row by trxId (invoice number). Returns userId, amount, status. */
+  async function lookupTopup(trxId: string): Promise<{ userId: string; amount: number; status: string } | null> {
+    const supabaseUrl = env.VITE_SUPABASE_URL
+    const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY
+    if (!supabaseUrl || !supabaseKey) return null
+
+    const res = await fetch(
+      `${supabaseUrl}/rest/v1/topup_transactions?select=user_id,amount,status&trx_id=eq.${encodeURIComponent(trxId)}`,
+      {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+        },
+      }
+    )
+    if (!res.ok) return null
+    const rows: any = await res.json()
+    if (!rows?.[0]) return null
+    return { userId: rows[0].user_id, amount: rows[0].amount, status: rows[0].status }
   }
   /**
    * Estimate token count for a message.
@@ -268,8 +460,9 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
   return {
     name: 'nimbus-chat-proxy',
     configureServer(server) {
-      // ── POST /api/payment/create-topup ─────────────────────────────────
-      server.middlewares.use('/api/payment/create-topup', async (req, res) => {
+      // ── POST /api/payment/create-checkout ──────────────────────────────
+      // Buat sesi DOKU Checkout, balas { url, invoiceNumber } untuk redirect.
+      server.middlewares.use('/api/payment/create-checkout', async (req, res) => {
         if (req.method !== 'POST') {
           res.statusCode = 405
           res.setHeader('content-type', 'application/json')
@@ -281,7 +474,7 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({
             error: 'payments_disabled',
-            message: 'Pembayaran otomatis sedang dalam tahap development. Untuk upgrade Pro sementara, hubungi admin.',
+            message: 'Pembayaran sedang tidak aktif. Set PAYMENTS_ENABLED=true di .env.',
           }))
           return
         }
@@ -297,25 +490,22 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
             return
           }
 
-          const result = await fr3CreateTopup(PRO_PRICE_IDR)
-          if (result?.status !== 200 || !result?.data?.trxId) {
-            res.statusCode = 502
-            res.setHeader('content-type', 'application/json')
-            res.end(JSON.stringify({ error: 'Gagal membuat topup', detail: result }))
-            return
-          }
-
-          // Record initial PENDING transaction
-          await recordTopup(userId, result.data.trxId, PRO_PRICE_IDR, 'PENDING')
+          const result = await dokuCreatePayment({ userId, amount: PRO_PRICE_IDR })
+          await recordTopup({
+            userId,
+            trxId: result.invoiceNumber,
+            amount: PRO_PRICE_IDR,
+            status: 'PENDING',
+            sessionId: result.sessionId,
+          })
 
           res.statusCode = 200
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({
-            trxId: result.data.trxId,
-            qrString: result.data.qr_string,
-            totalTransfer: result.data.totalTransfer,
-            uniqueCode: result.data.uniqueCode,
-            expiry: result.data.expiry,
+            url: result.url,
+            invoiceNumber: result.invoiceNumber,
+            sessionId: result.sessionId,
+            expiredDate: result.expiredDate,
           }))
         } catch (err: any) {
           res.statusCode = 500
@@ -325,20 +515,13 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
       })
 
       // ── GET /api/payment/check-status?trxId=...&userId=... ─────────────
+      // Polling status. Cek Supabase dulu (di-update via webhook). Kalau masih
+      // PENDING, query DOKU langsung — fallback untuk dev tanpa webhook publik.
       server.middlewares.use('/api/payment/check-status', async (req, res) => {
         if (req.method !== 'GET') {
           res.statusCode = 405
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({ error: 'Method not allowed' }))
-          return
-        }
-        if (!PAYMENTS_ENABLED) {
-          res.statusCode = 503
-          res.setHeader('content-type', 'application/json')
-          res.end(JSON.stringify({
-            error: 'payments_disabled',
-            message: 'Payment status checking is disabled while payments are in development.',
-          }))
           return
         }
         try {
@@ -352,21 +535,96 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
             return
           }
 
-          const result = await fr3CheckStatus(trxId)
-          const status = result?.data?.status || 'UNKNOWN'
+          const row = await lookupTopup(trxId)
+          if (!row || row.userId !== userId) {
+            res.statusCode = 404
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify({ error: 'Transaksi tidak ditemukan' }))
+            return
+          }
 
-          // Update transaction record
-          await recordTopup(userId, trxId, result?.data?.amount || PRO_PRICE_IDR, status)
-
-          // If success, upgrade plan
-          let upgraded = false
-          if (status === 'SUCCESS') {
-            upgraded = await upgradeUserToPro(userId)
+          let status = row.status
+          // Jika belum final, query DOKU. Bermanfaat saat webhook tidak terkonfigurasi.
+          if (status === 'PENDING') {
+            const remote = await dokuCheckStatus(trxId)
+            if (remote && remote !== 'PENDING') {
+              status = remote
+              await recordTopup({ userId, trxId, amount: row.amount, status })
+              if (status === 'SUCCESS') {
+                await upgradeUserToPro(userId)
+              }
+            }
           }
 
           res.statusCode = 200
           res.setHeader('content-type', 'application/json')
-          res.end(JSON.stringify({ status, upgraded, trxId }))
+          res.end(JSON.stringify({ status, trxId }))
+        } catch (err: any) {
+          res.statusCode = 500
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ error: String(err?.message || err) }))
+        }
+      })
+
+      // ── POST /api/payment/notify (DOKU webhook) ────────────────────────
+      // Verifikasi signature, update status di Supabase, upgrade plan kalau SUCCESS.
+      server.middlewares.use('/api/payment/notify', async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ error: 'Method not allowed' }))
+          return
+        }
+        try {
+          let raw = ''
+          for await (const chunk of req) raw += chunk
+
+          const clientId = String(req.headers['client-id'] || '')
+          const requestId = String(req.headers['request-id'] || '')
+          const timestamp = String(req.headers['request-timestamp'] || '')
+          const signature = String(req.headers['signature'] || '')
+
+          const valid = dokuVerifyNotification({ clientId, requestId, timestamp, signature, rawBody: raw })
+          if (!valid) {
+            res.statusCode = 401
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify({ error: 'Invalid signature' }))
+            return
+          }
+
+          const body: any = raw ? JSON.parse(raw) : {}
+          const invoiceNumber = body?.order?.invoice_number
+          const amount = Number(body?.order?.amount || 0)
+          const transactionStatus = String(body?.transaction?.status || '').toUpperCase()
+          if (!invoiceNumber) {
+            res.statusCode = 400
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify({ error: 'invoice_number missing' }))
+            return
+          }
+
+          const row = await lookupTopup(invoiceNumber)
+          if (!row) {
+            res.statusCode = 404
+            res.setHeader('content-type', 'application/json')
+            res.end(JSON.stringify({ error: 'Transaction not found' }))
+            return
+          }
+
+          await recordTopup({
+            userId: row.userId,
+            trxId: invoiceNumber,
+            amount: amount || row.amount,
+            status: transactionStatus,
+          })
+
+          if (transactionStatus === 'SUCCESS') {
+            await upgradeUserToPro(row.userId)
+          }
+
+          res.statusCode = 200
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ message: 'OK' }))
         } catch (err: any) {
           res.statusCode = 500
           res.setHeader('content-type', 'application/json')
@@ -480,28 +738,58 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
           if (env.OPENROUTER_TITLE) headers['X-Title'] = env.OPENROUTER_TITLE
         }
 
-        try {
-          const upstream = await fetch(upstreamUrl, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model: model.upstreamId,
-              messages: truncatedMessages,
-              temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
-              stream: true,
-            }),
-          })
+        // Coba upstream id utama; kalau gagal sebelum streaming dimulai dan
+        // model punya fallback, retry dengan id cadangan (gateway sama).
+        const candidates = model.fallbackUpstreamId
+          ? [model.upstreamId, model.fallbackUpstreamId]
+          : [model.upstreamId]
 
-          if (!upstream.ok) {
-            const text = await upstream.text()
-            let data: any
-            try { data = JSON.parse(text) } catch { data = { raw: text } }
-            res.statusCode = upstream.status
-            res.setHeader('content-type', 'application/json')
-            res.end(JSON.stringify({ error: 'Gateway error', gateway: model.gateway, detail: data }))
-            return
+        let upstream: Response | null = null
+        let lastErrorDetail: any = null
+        let lastStatus = 502
+        let usedUpstreamId = candidates[0]
+
+        for (let i = 0; i < candidates.length; i++) {
+          const candidate = candidates[i]
+          try {
+            const r = await fetch(upstreamUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                model: candidate,
+                messages: truncatedMessages,
+                temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
+                stream: true,
+              }),
+            })
+
+            if (r.ok) {
+              upstream = r
+              usedUpstreamId = candidate
+              if (i > 0) console.log(`[chat] fallback used: ${model.id} → ${candidate}`)
+              break
+            }
+
+            // Non-OK: simpan error detail, lanjut ke kandidat berikutnya kalau ada.
+            const text = await r.text()
+            try { lastErrorDetail = JSON.parse(text) } catch { lastErrorDetail = { raw: text } }
+            lastStatus = r.status
+            console.warn(`[chat] upstream ${candidate} returned ${r.status}; trying next candidate if any`)
+          } catch (err: any) {
+            lastErrorDetail = { message: String(err?.message || err) }
+            lastStatus = 502
+            console.warn(`[chat] upstream ${candidate} threw: ${lastErrorDetail.message}`)
           }
+        }
 
+        if (!upstream) {
+          res.statusCode = lastStatus
+          res.setHeader('content-type', 'application/json')
+          res.end(JSON.stringify({ error: 'Gateway error', gateway: model.gateway, detail: lastErrorDetail }))
+          return
+        }
+
+        try {
           // Stream SSE to client
           res.statusCode = 200
           res.setHeader('content-type', 'text/event-stream')
@@ -539,7 +827,7 @@ function chatProxyPlugin(env: Record<string, string>): Plugin {
           }
 
           // Send final metadata event
-          res.write(`data: ${JSON.stringify({ nimbus_done: true, model: model.id, gateway: model.gateway, fullReply })}\n\n`)
+          res.write(`data: ${JSON.stringify({ nimbus_done: true, model: model.id, gateway: model.gateway, upstreamId: usedUpstreamId, fullReply })}\n\n`)
           res.end('data: [DONE]\n\n')
         } catch (err: any) {
           res.statusCode = 502

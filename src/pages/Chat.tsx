@@ -389,14 +389,16 @@ export default function ChatPage() {
 
       const decoder = new TextDecoder();
       let fullReply = '';
+      let buffer = '';
 
       while (true) {
         if (stopRequested.current) { reader.cancel(); break; }
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;

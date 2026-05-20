@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import Login from './pages/Login'
 import Chat from './pages/Chat'
 import Billing from './pages/Billing'
+import BillingReturn from './pages/BillingReturn'
 import Usage from './pages/Usage'
 import Settings from './pages/Settings'
 import { AuthCallback } from './pages/AuthCallback'
@@ -14,6 +15,7 @@ function App() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/chat" element={<Chat />} />
       <Route path="/billing" element={<Billing />} />
+      <Route path="/billing/return" element={<BillingReturn />} />
       <Route path="/usage" element={<Usage />} />
       <Route path="/settings" element={<Settings />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
